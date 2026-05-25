@@ -8840,7 +8840,7 @@ const LOCALES = {
     create_job: '创建任务',
     suggest_plan: '帮我规划一个小项目。',
     suggest_schedule: '今天有什么安排？',
-    suggest_files: '这个工作区有哪些文件？',
+    suggest_files: '门控检查做了没？先出方案再执行。',
     sign_out: '退出登录',
     settings_label_shutdown: '停止 Hermes WebUI 服务器',
     settings_desc_shutdown: '优雅地停止本地 WebUI 服务器。如果你通过 <code>./ctl.sh start</code> 启动，并希望不切换到终端就停止它，这会很有用。要再次访问 WebUI，需要重新启动服务器（<code>./ctl.sh start</code> 或原生应用）。',
