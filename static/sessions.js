@@ -3386,16 +3386,6 @@ let _gatewaySSE = null;
 let _gatewayPollTimer = null;
 let _gatewayProbeInFlight = false;
 let _gatewaySSEWarningShown = false;
-const _gatewayFallbackPollMs = 30000;
-const _streamingPollMs = 5000;
-const _sessionTimeRefreshMs = 60000;
-// #3107: the active-session "is it externally updated?" poll used to fire
-// every 5 s. On long sessions this caused visible scroll jitter and a
-// noticeable network/CPU floor because the SSE session-events stream
-// already pushes invalidations in real time; this poll exists only as a
-// fallback for the case where SSE is broken/unavailable. Bump to 30 s
-// to keep the safety net without turning it into a primary refresh path.
-const _activeSessionExternalRefreshMs = 30000;
 let _streamingPollTimer = null;
 let _sessionTimeRefreshTimer = null;
 let _activeSessionExternalRefreshTimer = null;
@@ -3419,9 +3409,11 @@ let _sessionListRefreshPendingReason = '';
 
 function startStreamingPoll(){
   if(_streamingPollTimer) return;
+  const ms = window._pollingStreamMs ?? 30000;
+  if(!ms) return;
   _streamingPollTimer = setInterval(() => {
     void renderSessionList({deferWhileInteracting:true});
-  }, _streamingPollMs);
+  }, ms);
 }
 
 function stopStreamingPoll(){
@@ -3432,9 +3424,11 @@ function stopStreamingPoll(){
 
 function ensureSessionTimeRefreshPoll(){
   if(_sessionTimeRefreshTimer) return;
+  const ms = window._pollingDashboardMs ?? 120000;
+  if(!ms) return;
   _sessionTimeRefreshTimer = setInterval(() => {
     renderSessionListFromCache();
-  }, _sessionTimeRefreshMs);
+  }, ms);
 }
 
 async function refreshActiveSessionIfExternallyUpdated(reason){
@@ -3470,9 +3464,11 @@ async function refreshActiveSessionIfExternallyUpdated(reason){
 
 function ensureActiveSessionExternalRefreshPoll(){
   if(_activeSessionExternalRefreshTimer) return;
+  const ms = window._pollingSessionRefreshMs ?? 60000;
+  if(!ms) return;
   _activeSessionExternalRefreshTimer = setInterval(() => {
     void refreshActiveSessionIfExternallyUpdated('poll');
-  }, _activeSessionExternalRefreshMs);
+  }, ms);
   if(typeof document !== 'undefined' && !document._hermesExternalRefreshVisibilityHook){
     document.addEventListener('visibilitychange', () => {
       if(!document.hidden) void refreshActiveSessionIfExternallyUpdated('visible');
@@ -3577,9 +3573,10 @@ function ensureSessionEventsSSE(){
 if(typeof window!=='undefined') window.refreshSessionList = refreshSessionList;
 
 function startGatewayPollFallback(ms){
-  const intervalMs = Math.max(5000, Number(ms) || _gatewayFallbackPollMs);
+  const value = Number(ms) || (window._pollingSessionRefreshMs ?? 60000);
+  if(!value || value < 5000) return;
   if(_gatewayPollTimer) clearInterval(_gatewayPollTimer);
-  _gatewayPollTimer = setInterval(() => { renderSessionList({deferWhileInteracting:true}); }, intervalMs);
+  _gatewayPollTimer = setInterval(() => { renderSessionList({deferWhileInteracting:true}); }, value);
 }
 
 function stopGatewayPollFallback(){
@@ -3624,7 +3621,7 @@ async function probeGatewaySSEStatus(){
       return;
     }
     if(resp.status === 503 || data.watcher_running === false){
-      startGatewayPollFallback(data.fallback_poll_ms || _gatewayFallbackPollMs);
+      startGatewayPollFallback(data.fallback_poll_ms);
       renderSessionList({deferWhileInteracting:true});
       if(!_gatewaySSEWarningShown && typeof showToast === 'function'){
         showToast('Gateway sync unavailable — falling back to periodic refresh.', 5000);
@@ -3635,7 +3632,7 @@ async function probeGatewaySSEStatus(){
     // Network error during probe — server may be unreachable.
     // Start fallback polling as a safe default; it will self-cancel
     // when the SSE connection recovers and sessions_changed fires.
-    startGatewayPollFallback(_gatewayFallbackPollMs);
+    startGatewayPollFallback();
     renderSessionList({deferWhileInteracting:true});
   }finally{
     _gatewayProbeInFlight = false;

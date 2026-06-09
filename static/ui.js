@@ -23,7 +23,6 @@ const MAX_UPLOAD_MB=Math.round(MAX_UPLOAD_BYTES/1024/1024);
 // single-threaded so only one done event fires at a time in practice.
 let _queueDrainSid=null;
 const $=id=>document.getElementById(id);
-const OFFLINE_RECHECK_MS=2500;
 let _offlineVisible=false;
 let _offlineReason='browser';
 let _offlineProbeTimer=null;
@@ -54,7 +53,8 @@ function _renderOfflineBanner(){
 }
 function _startOfflineProbeTimer(){
   if(_offlineProbeTimer)return;
-  _offlineProbeTimer=setInterval(()=>{checkOfflineRecoveryNow();},OFFLINE_RECHECK_MS);
+  const ms = window._pollingOfflineMs ?? 0;
+  if(ms > 0) _offlineProbeTimer = setInterval(() => { checkOfflineRecoveryNow(); }, ms);
 }
 function _stopOfflineProbeTimer(){
   if(_offlineProbeTimer){clearInterval(_offlineProbeTimer);_offlineProbeTimer=null;}
@@ -479,7 +479,6 @@ async function jumpToTurnQuestion(questionRawIdx){
   }
 }
 
-const DASHBOARD_STATUS_TTL_MS=60000;
 let _dashboardStatusCache=null;
 let _dashboardStatusFetchedAt=0;
 
@@ -524,7 +523,8 @@ function _applyDashboardStatus(status){
 }
 async function refreshDashboardStatus(force=false){
   const now=Date.now();
-  if(!force&&_dashboardStatusCache&&(now-_dashboardStatusFetchedAt)<DASHBOARD_STATUS_TTL_MS){
+  const ttl = window._pollingDashboardMs ?? 120000;
+  if(!force&&_dashboardStatusCache&&(now-_dashboardStatusFetchedAt)<ttl){
     _applyDashboardStatus(_dashboardStatusCache);
     return _dashboardStatusCache;
   }
@@ -575,13 +575,10 @@ function openHermesDashboard(event){
 function _initDashboardLinkProbe(){
   loadDashboardSettings();
   refreshDashboardStatus(true);
-  setInterval(refreshDashboardStatus,DASHBOARD_STATUS_TTL_MS);
+  const ms = window._pollingDashboardMs ?? 120000;
+  if(ms) setInterval(refreshDashboardStatus, ms);
 }
-if(document.readyState==='complete'){
-  _initDashboardLinkProbe();
-}else{
-  document.addEventListener('DOMContentLoaded',_initDashboardLinkProbe,{once:true});
-}
+// Deferred to boot.js after poll config is set
 
 /* ── Image lightbox — click any .msg-media-img to enlarge ─────────────────── */
 function _openImgLightbox(imgEl) {
@@ -5288,7 +5285,6 @@ function dismissReconnect() {
 }
 
 // ── Live host resource health panel (#693) ──
-const SYSTEM_HEALTH_INTERVAL_MS=5000;
 let _systemHealthTimer=null;
 function _systemHealthPercent(metric){
   const percent=Number(metric&&metric.percent);
@@ -5367,8 +5363,10 @@ function _systemHealthPanelIsVisible(){
 function startSystemHealthMonitor(){
   if(!_systemHealthPanelIsVisible()) return;
   if(_systemHealthTimer) return;
+  const ms = window._pollingHealthMs ?? 30000;
+  if(!ms) return;
   void pollSystemHealth();
-  _systemHealthTimer=setInterval(pollSystemHealth,SYSTEM_HEALTH_INTERVAL_MS);
+  _systemHealthTimer=setInterval(pollSystemHealth, ms);
 }
 function stopSystemHealthMonitor(){
   if(_systemHealthTimer){clearInterval(_systemHealthTimer);_systemHealthTimer=null;}
@@ -5378,11 +5376,9 @@ function _syncSystemHealthMonitorVisibility(){
   else stopSystemHealthMonitor();
 }
 document.addEventListener('visibilitychange',_syncSystemHealthMonitorVisibility);
-if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',startSystemHealthMonitor);
-else startSystemHealthMonitor();
+// Deferred to boot.js after poll config is set
 
 // ── Hermes agent/gateway heartbeat alert (#716) ──
-const AGENT_HEALTH_INTERVAL_MS=30000;
 const AGENT_HEALTH_DISMISSED_KEY='agent-health-dismissed';
 let _agentHealthTimer=null;
 let _agentHealthLastState='unknown';
@@ -5443,8 +5439,10 @@ async function pollAgentHealth(){
 function startAgentHealthMonitor(){
   if(document.visibilityState !== 'visible') return;
   if(_agentHealthTimer) return;
+  const ms = window._pollingAgentHealthMs ?? 60000;
+  if(!ms) return;
   void pollAgentHealth();
-  _agentHealthTimer=setInterval(pollAgentHealth, AGENT_HEALTH_INTERVAL_MS);
+  _agentHealthTimer=setInterval(pollAgentHealth, ms);
 }
 function stopAgentHealthMonitor(){
   if(_agentHealthTimer){clearInterval(_agentHealthTimer);_agentHealthTimer=null;}
@@ -5454,8 +5452,7 @@ function _syncAgentHealthMonitorVisibility(){
   else stopAgentHealthMonitor();
 }
 document.addEventListener('visibilitychange',_syncAgentHealthMonitorVisibility);
-if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',startAgentHealthMonitor);
-else startAgentHealthMonitor();
+// Deferred to boot.js after poll config is set
 async function refreshSession() {
   // When the banner is in post-update restart mode, the "Reload" button
   // should do a full page reload — a session refresh would just 502 while

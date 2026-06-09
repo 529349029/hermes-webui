@@ -8201,6 +8201,8 @@ window.addEventListener('hermes:cron_created', () => {
 
 function startCronPolling(){
   if(_cronPollTimer) return;
+  const _cronIntervalMs = window._pollingCronMs ?? 60000;
+  if(!_cronIntervalMs) return;
   _cronPollTimer=setInterval(async()=>{
     if(document.hidden) return;  // don't poll when tab is in background
     try{
@@ -8217,7 +8219,7 @@ function startCronPolling(){
         updateCronBadge();
       }
     }catch(e){}
-  },30000);
+  },_cronIntervalMs);
 }
 
 function updateCronBadge(){
@@ -8251,8 +8253,7 @@ function _clearCronUnreadForJob(jobId){
 const _origSwitchPanel=switchPanel;
 switchPanel=async function(name,opts){ return _origSwitchPanel(name,opts); };
 
-// Start polling on page load
-startCronPolling();
+// Deferred to boot.js after poll config is set
 
 // ── Background agent error tracking ──────────────────────────────────────────
 

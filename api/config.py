@@ -2807,7 +2807,7 @@ try:
         os.getenv("HERMES_WEBUI_MODELS_REBUILD_BUDGET", "4") or "4"
     )
 except (TypeError, ValueError):
-    _LIVE_REBUILD_BUDGET_SECONDS = 4.0
+    _LIVE_REBUILD_BUDGET_SECONDS = 60.0  # increased from 4.0 for networks without proxy
 
 
 # ── Budget-exceeded warning rate-limit ───────────────────────────────────────
@@ -3770,97 +3770,116 @@ def get_available_models(*, prefer_cache: bool = False) -> dict:
         if active_provider:
             detected_providers.add(active_provider)
 
+        # 3a. Early filter: if selected_only_models is true, skip non-Chinese
+        # provider probes entirely (credential_pool, hermes_cli OAuth probes)
+        # to avoid slow network calls that will be filtered out anyway.
+        _china_early_filter = False
+        _china_allowlist = None
         try:
-            _pool = auth_store.get("credential_pool", {}) if isinstance(auth_store, dict) else {}
-            if isinstance(_pool, dict) and _pool:
-                try:
-                    from agent.credential_pool import load_pool as _load_pool
+            _china_settings = load_settings()
+            if _china_settings.get("selected_only_models", False):
+                _china_allowlist = frozenset({
+                    "deepseek", "xiaomi", "minimax", "minimax-cn",
+                    "kimi-coding", "kimi-coding-cn", "stepfun",
+                    "qwen", "alibaba", "tencent", "zai",
+                })
+                _china_early_filter = True
+        except Exception:
+            logger.debug("selected_only_models early filter skipped", exc_info=True)
 
-                    for _pid in list(_pool.keys()):
-                        try:
-                            _canonical_pid = _resolve_provider_alias(str(_pid))
-                            # Check credential pool cache first
-                            _cached = _CREDENTIAL_POOL_CACHE.get(_pid)
-                            if _cached is not None:
-                                _cp_ts, _cp_pool = _cached
-                                if (time.time() - _cp_ts) < 86400.0:
-                                    _all_entries = _cp_pool.entries()
+        if not _china_early_filter:
+            try:
+                _pool = auth_store.get("credential_pool", {}) if isinstance(auth_store, dict) else {}
+                if isinstance(_pool, dict) and _pool:
+                    try:
+                        from agent.credential_pool import load_pool as _load_pool
+
+                        for _pid in list(_pool.keys()):
+                            try:
+                                _canonical_pid = _resolve_provider_alias(str(_pid))
+                                # Check credential pool cache first
+                                _cached = _CREDENTIAL_POOL_CACHE.get(_pid)
+                                if _cached is not None:
+                                    _cp_ts, _cp_pool = _cached
+                                    if (time.time() - _cp_ts) < 86400.0:
+                                        _all_entries = _cp_pool.entries()
+                                    else:
+                                        _lp_t0 = time.monotonic()
+                                        _cp_pool = _load_pool(_pid)
+                                        _CREDENTIAL_POOL_CACHE[_pid] = (time.time(), _cp_pool)
+                                        _all_entries = _cp_pool.entries()
                                 else:
                                     _lp_t0 = time.monotonic()
                                     _cp_pool = _load_pool(_pid)
                                     _CREDENTIAL_POOL_CACHE[_pid] = (time.time(), _cp_pool)
                                     _all_entries = _cp_pool.entries()
-                            else:
-                                _lp_t0 = time.monotonic()
-                                _cp_pool = _load_pool(_pid)
-                                _CREDENTIAL_POOL_CACHE[_pid] = (time.time(), _cp_pool)
-                                _all_entries = _cp_pool.entries()
-                            _explicit = [
-                                e for e in _all_entries
-                                if not _is_ambient_gh_cli_entry(
-                                    str(getattr(e, "source", "") or ""),
-                                    str(getattr(e, "label", "") or ""),
-                                    str(getattr(e, "key_source", "") or ""),
+                                _explicit = [
+                                    e for e in _all_entries
+                                    if not _is_ambient_gh_cli_entry(
+                                        str(getattr(e, "source", "") or ""),
+                                        str(getattr(e, "label", "") or ""),
+                                        str(getattr(e, "key_source", "") or ""),
+                                    )
+                                ]
+                                if _explicit:
+                                    detected_providers.add(_canonical_pid)
+                            except Exception:
+                                logger.debug("credential_pool.load_pool(%s) failed", _pid)
+                    except ImportError:
+                        for _pid, _entries in _pool.items():
+                            if not isinstance(_entries, list) or len(_entries) == 0:
+                                continue
+                            _has_explicit_cred = any(
+                                isinstance(_entry, dict)
+                                and not _is_ambient_gh_cli_entry(
+                                    str(_entry.get("source", "") or ""),
+                                    str(_entry.get("label", "") or ""),
+                                    str(_entry.get("key_source", "") or ""),
                                 )
-                            ]
-                            if _explicit:
-                                detected_providers.add(_canonical_pid)
-                        except Exception:
-                            logger.debug("credential_pool.load_pool(%s) failed", _pid)
-                except ImportError:
-                    for _pid, _entries in _pool.items():
-                        if not isinstance(_entries, list) or len(_entries) == 0:
-                            continue
-                        _has_explicit_cred = any(
-                            isinstance(_entry, dict)
-                            and not _is_ambient_gh_cli_entry(
-                                str(_entry.get("source", "") or ""),
-                                str(_entry.get("label", "") or ""),
-                                str(_entry.get("key_source", "") or ""),
+                                for _entry in _entries
                             )
-                            for _entry in _entries
-                        )
-                        if _has_explicit_cred:
-                            detected_providers.add(_resolve_provider_alias(str(_pid)))
-        except Exception:
-            logger.debug("Failed to inspect credential_pool from auth store")
+                            if _has_explicit_cred:
+                                detected_providers.add(_resolve_provider_alias(str(_pid)))
+            except Exception:
+                logger.debug("Failed to inspect credential_pool from auth store")
 
         all_env: dict = {}
 
         _hermes_auth_used = False
-        try:
-            from hermes_cli.models import list_available_providers as _lap
-            from hermes_cli.auth import get_auth_status as _gas
-
-            for _p in _lap():
-                if not _p.get("authenticated"):
-                    continue
-                try:
-                    _src = _gas(_p["id"]).get("key_source", "")
-                    if _src == "gh auth token":
-                        continue
-                except Exception:
-                    logger.debug("Failed to get key source for provider %s", _p.get("id", "unknown"))
-                detected_providers.add(_p["id"])
-            _hermes_auth_used = True
-
-            # Belt-and-braces: list_available_providers() is the primary signal
-            # for OAuth providers, but its `authenticated` field can disagree
-            # with `get_auth_status(<id>).logged_in` on some hermes_cli versions
-            # (the two fields are computed via different code paths). When the
-            # disagreement happens for Nous Portal, the Settings → Providers
-            # card renders the live catalog (because api/providers.py iterates
-            # all OAuth providers regardless of authentication state) but the
-            # picker dropdown comes up empty — a confusing asymmetry reported
-            # in #1567. Add Nous explicitly when get_auth_status agrees so the
-            # picker stays in sync with the providers card.
+        if not _china_early_filter:
             try:
-                if _gas("nous").get("logged_in"):
-                    detected_providers.add("nous")
+                from hermes_cli.models import list_available_providers as _lap
+                from hermes_cli.auth import get_auth_status as _gas
+
+                for _p in _lap():
+                    if not _p.get("authenticated"):
+                        continue
+                    try:
+                        _src = _gas(_p["id"]).get("key_source", "")
+                        if _src == "gh auth token":
+                            continue
+                    except Exception:
+                        logger.debug("Failed to get key source for provider %s", _p.get("id", "unknown"))
+                    detected_providers.add(_p["id"])
+                _hermes_auth_used = True
+
+                # Belt-and-braces: list_available_providers() is the primary signal
+                # for OAuth providers, but its `authenticated` field can disagree
+                # with `get_auth_status(<id>).logged_in` on some hermes_cli versions
+                # (the two fields are computed via different code paths). When the
+                # disagreement happens for Nous Portal, the Settings → Providers
+                # card renders the live catalog (because api/providers.py iterates
+                # all OAuth providers regardless of authentication state) but the
+                # picker dropdown comes up empty — a confusing asymmetry reported
+                # in #1567. Add Nous explicitly when get_auth_status agrees so the
+                # picker stays in sync with the providers card.
+                try:
+                    if _gas("nous").get("logged_in"):
+                        detected_providers.add("nous")
+                except Exception:
+                    logger.debug("Failed to check Nous Portal auth status")
             except Exception:
-                logger.debug("Failed to check Nous Portal auth status")
-        except Exception:
-            logger.debug("Failed to detect auth providers from hermes")
+                logger.debug("Failed to detect auth providers from hermes")
 
         if not _hermes_auth_used:
             try:
@@ -3880,76 +3899,79 @@ def get_available_models(*, prefer_cache: bool = False) -> dict:
                 except Exception:
                     logger.debug("Failed to parse hermes env file")
             all_env = {**env_keys}
-            for k in (
-                "ANTHROPIC_API_KEY",
-                "OPENAI_API_KEY",
-                "OPENROUTER_API_KEY",
-                "GOOGLE_API_KEY",
-                "GEMINI_API_KEY",
-                "GLM_API_KEY",
-                "KIMI_API_KEY",
-                "DEEPSEEK_API_KEY",
-                "XIAOMI_API_KEY",
-                "OPENCODE_ZEN_API_KEY",
-                "OPENCODE_GO_API_KEY",
-                "OPENCODE_API_KEY",
-                "MINIMAX_API_KEY",
-                "MINIMAX_CN_API_KEY",
-                "XAI_API_KEY",
-                "MISTRAL_API_KEY",
-                "AWS_ACCESS_KEY_ID",
-                "AWS_SECRET_ACCESS_KEY",
-            ):
-                val = os.getenv(k)
-                if val:
-                    all_env[k] = val
-            if all_env.get("ANTHROPIC_API_KEY"):
-                detected_providers.add("anthropic")
-            if all_env.get("OPENAI_API_KEY"):
-                # hermes-agent registers its OPENAI_API_KEY/OPENAI_BASE_URL provider
-                # under the slug `openai-api` (there is no bare `openai` in the agent
-                # registry — only `openai-api` and `openai-codex`). Detecting `openai`
-                # here would emit `@openai:` picker entries the agent can't resolve on
-                # the send path, so detect `openai-api` to match the registry (#3443).
-                detected_providers.add("openai-api")
-                # openai-codex uses ChatGPT OAuth (not OPENAI_API_KEY) for its default endpoint.
-                # Detecting it here lets users who have both credentials configured find it in the
-                # picker without a manual config.yaml edit. Users without Codex OAuth will see
-                # picker entries but hit auth errors at inference time (#1189 known limitation).
-                detected_providers.add("openai-codex")
-            if all_env.get("OPENROUTER_API_KEY"):
-                detected_providers.add("openrouter")
-            if all_env.get("GOOGLE_API_KEY"):
-                detected_providers.add("google")
-            if all_env.get("GEMINI_API_KEY"):
-                detected_providers.add("gemini")
-            if all_env.get("GLM_API_KEY"):
-                detected_providers.add("zai")
+            if _china_early_filter:
+                # selected_only_models: only check China-allowlisted env vars
+                _china_env_keys = [
+                    key for key in (
+                        "DEEPSEEK_API_KEY", "XIAOMI_API_KEY",
+                        "KIMI_API_KEY", "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY",
+                        "GLM_API_KEY", "OPENCODE_ZEN_API_KEY", "OPENCODE_GO_API_KEY",
+                        "OPENCODE_API_KEY",
+                    )
+                    if os.getenv(key)
+                ]
+                for _ck in _china_env_keys:
+                    all_env[_ck] = os.getenv(_ck)
+            else:
+                for k in (
+                    "ANTHROPIC_API_KEY",
+                    "OPENAI_API_KEY",
+                    "OPENROUTER_API_KEY",
+                    "GOOGLE_API_KEY",
+                    "GEMINI_API_KEY",
+                    "GLM_API_KEY",
+                    "KIMI_API_KEY",
+                    "DEEPSEEK_API_KEY",
+                    "XIAOMI_API_KEY",
+                    "OPENCODE_ZEN_API_KEY",
+                    "OPENCODE_GO_API_KEY",
+                    "OPENCODE_API_KEY",
+                    "MINIMAX_API_KEY",
+                    "MINIMAX_CN_API_KEY",
+                    "XAI_API_KEY",
+                    "MISTRAL_API_KEY",
+                    "AWS_ACCESS_KEY_ID",
+                    "AWS_SECRET_ACCESS_KEY",
+                ):
+                    val = os.getenv(k)
+                    if val:
+                        all_env[k] = val
+            if all_env.get("DEEPSEEK_API_KEY"):
+                detected_providers.add("deepseek")
+            if all_env.get("XIAOMI_API_KEY"):
+                detected_providers.add("xiaomi")
             if all_env.get("KIMI_API_KEY"):
                 detected_providers.add("kimi-coding")
             if all_env.get("MINIMAX_API_KEY"):
                 detected_providers.add("minimax")
             if all_env.get("MINIMAX_CN_API_KEY"):
                 detected_providers.add("minimax-cn")
-            if all_env.get("DEEPSEEK_API_KEY"):
-                detected_providers.add("deepseek")
-            if all_env.get("XIAOMI_API_KEY"):
-                detected_providers.add("xiaomi")
-            if all_env.get("XAI_API_KEY"):
-                detected_providers.add("x-ai")
-            if all_env.get("MISTRAL_API_KEY"):
-                detected_providers.add("mistralai")
+            if all_env.get("GLM_API_KEY"):
+                detected_providers.add("zai")
             if all_env.get("OPENCODE_ZEN_API_KEY") or all_env.get("OPENCODE_API_KEY"):
                 detected_providers.add("opencode-zen")
             if all_env.get("OPENCODE_GO_API_KEY") or all_env.get("OPENCODE_API_KEY"):
                 detected_providers.add("opencode-go")
-            # AWS Bedrock uses IAM credentials rather than a single API key.
-            # Detect when both access key and secret are available (#2720).
-            if all_env.get("AWS_ACCESS_KEY_ID") and all_env.get("AWS_SECRET_ACCESS_KEY"):
-                detected_providers.add("bedrock")
-            # LM Studio: detect via LM_API_KEY + LM_BASE_URL in ~/.hermes/.env
-            if all_env.get("LM_API_KEY") and all_env.get("LM_BASE_URL"):
-                detected_providers.add("lmstudio")
+            if not _china_early_filter:
+                if all_env.get("ANTHROPIC_API_KEY"):
+                    detected_providers.add("anthropic")
+                if all_env.get("OPENAI_API_KEY"):
+                    detected_providers.add("openai-api")
+                    detected_providers.add("openai-codex")
+                if all_env.get("OPENROUTER_API_KEY"):
+                    detected_providers.add("openrouter")
+                if all_env.get("GOOGLE_API_KEY"):
+                    detected_providers.add("google")
+                if all_env.get("GEMINI_API_KEY"):
+                    detected_providers.add("gemini")
+                if all_env.get("XAI_API_KEY"):
+                    detected_providers.add("x-ai")
+                if all_env.get("MISTRAL_API_KEY"):
+                    detected_providers.add("mistralai")
+                if all_env.get("AWS_ACCESS_KEY_ID") and all_env.get("AWS_SECRET_ACCESS_KEY"):
+                    detected_providers.add("bedrock")
+                if all_env.get("LM_API_KEY") and all_env.get("LM_BASE_URL"):
+                    detected_providers.add("lmstudio")
 
         # Also detect providers explicitly listed in config.yaml providers section.
         # A user may configure a provider key via config.yaml providers.<name>.api_key
@@ -4408,6 +4430,27 @@ def get_available_models(*, prefer_cache: bool = False) -> dict:
                 _c = _canonicalise_provider_id(_pid) or _pid
                 _canonicalised_detected.add(_c)
             detected_providers = _canonicalised_detected
+
+        # 5a. China-only filter — if settings.selected_only_models is true, strip
+        # non-Chinese providers (copilot, openai, anthropic, etc.) so the model
+        # picker doesn't try to live-fetch from unreachable endpoints.
+        try:
+            _china_settings = load_settings()
+            if _china_settings.get("selected_only_models", False):
+                _china_allowlist = frozenset({
+                    "deepseek", "xiaomi", "minimax", "minimax-cn",
+                    "kimi-coding", "kimi-coding-cn", "stepfun",
+                    "qwen", "alibaba", "tencent", "zai",
+                })
+                detected_providers = {
+                    p for p in detected_providers
+                    if p in _china_allowlist
+                    or p.startswith("custom:")
+                    or p.startswith("minimax")
+                    or p.startswith("kimi")
+                }
+        except Exception:
+            logger.debug("selected_only_models filter skipped", exc_info=True)
 
         # 5. Build model groups
         if detected_providers:

@@ -1839,6 +1839,22 @@ function applyBotName(){
       }
     }
     window._sessionJumpButtonsEnabled=!!s.session_jump_buttons;
+
+    // Polling interval configuration (read by sessions.js/ui.js/panels.js)
+    window._pollingStreamMs = s.polling_stream_ms ?? 30000;
+    window._pollingHealthMs = s.polling_health_ms ?? 30000;
+    window._pollingOfflineMs = s.polling_offline_ms ?? 0;
+    window._pollingSessionRefreshMs = s.polling_session_refresh_ms ?? 60000;
+    window._pollingAgentHealthMs = s.polling_agent_health_ms ?? 60000;
+    window._pollingCronMs = s.polling_cron_ms ?? 60000;
+    window._pollingDashboardMs = s.polling_dashboard_ms ?? 120000;
+
+    // Start background polling after config is loaded
+    try{if(typeof _initDashboardLinkProbe==='function') _initDashboardLinkProbe();}catch(_){}
+    try{if(typeof startSystemHealthMonitor==='function') startSystemHealthMonitor();}catch(_){}
+    try{if(typeof startAgentHealthMonitor==='function') startAgentHealthMonitor();}catch(_){}
+    try{if(typeof startCronPolling==='function') startCronPolling();}catch(_){}
+
     // Reconcile appearance: prefer localStorage (what the user last saw) over
     // the server.  If they diverge (e.g. a previous autosave POST failed),
     // push the localStorage values back to the server so settings.json stays

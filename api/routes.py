@@ -21,7 +21,6 @@ import sys
 import threading
 import time
 import uuid
-import re
 from collections import defaultdict
 from pathlib import Path
 from contextlib import closing

@@ -241,8 +241,7 @@ def _detect_webui_version() -> str:
     version_file = REPO_ROOT / 'api' / '_version.py'
     if version_file.exists():
         try:
-            import re as _re
-            m = _re.search(
+            m = re.search(
                 r"""__version__\s*=\s*['"]([^'"]+)['"]""",
                 version_file.read_text(encoding='utf-8'),
             )

@@ -8236,17 +8236,16 @@ def cancel_stream(stream_id: str) -> bool:
                 partial_text = _cancel_partial_text.strip() if _cancel_partial_text else ''
                 _stripped = ''
                 if partial_text:
-                    import re as _re
                     # Strip thinking/reasoning markup from partial content before saving.
                     # First pass: remove complete <thinking>...</thinking> blocks.
-                    _stripped = _re.sub(r'<think(?:ing)?\b[^>]*>.*?</think(?:ing)?>',
+                    _stripped = re.sub(r'<think(?:ing)?\b[^>]*>.*?</think(?:ing)?>',
                                         '', partial_text,
-                                        flags=_re.DOTALL | _re.IGNORECASE).strip()
+                                        flags=re.DOTALL | re.IGNORECASE).strip()
                     # Second pass: strip trailing UNCLOSED think/thinking block (the common
                     # cancel case — user stops mid-reasoning before the close tag appears).
-                    _stripped = _re.sub(r'<think(?:ing)?\b[^>]*>.*',
+                    _stripped = re.sub(r'<think(?:ing)?\b[^>]*>.*',
                                         '', _stripped,
-                                        flags=_re.DOTALL | _re.IGNORECASE).strip()
+                                        flags=re.DOTALL | re.IGNORECASE).strip()
                 # Determine whether there is anything to preserve beyond just the
                 # cancel marker.  Content text, reasoning trace, or tool calls all
                 # count (#1361 §C — previously only _stripped was checked, so a

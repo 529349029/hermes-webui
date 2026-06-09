@@ -1,12 +1,19 @@
 """
 Hermes Web UI -- HTTP helper functions.
 """
+from __future__ import annotations
+
+import http.server
 import json as _json
 import logging
 import os
 import re as _re
 import ssl
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
+
+Handler = http.server.BaseHTTPRequestHandler
 from api.config import IMAGE_EXTS, MD_EXTS
 
 logger = logging.getLogger(__name__)
@@ -24,24 +31,21 @@ _CLIENT_DISCONNECT_ERRORS = (
 )
 
 
-def require(body: dict, *fields) -> None:
-    """Phase D: Validate required fields. Raises ValueError with clean message."""
+def require(body: dict, *fields: str) -> None:
     missing = [f for f in fields if not body.get(f) and body.get(f) != 0]
     if missing:
         raise ValueError(f"Missing required field(s): {', '.join(missing)}")
 
 
-def bad(handler, msg, status: int=400):
-    """Return a clean JSON error response."""
+def bad(handler: Handler, msg: str, status: int = 400) -> None:
     return j(handler, {'error': msg}, status=status)
 
 
 def _sanitize_error(e: Exception) -> str:
     """Strip filesystem paths from exception messages before returning to client."""
-    import re
     msg = str(e)
     # Remove absolute paths (Unix and Windows)
-    msg = re.sub(r'(?:(?:/[a-zA-Z0-9_.-]+)+|(?:[A-Z]:\\[^\s]+))', '<path>', msg)
+    msg = _re.sub(r'(?:(?:/[a-zA-Z0-9_.-]+)+|(?:[A-Z]:\\[^\s]+))', '<path>', msg)
     return msg
 
 
@@ -119,7 +123,7 @@ def _build_csp_report_only_policy(extra_connect_src: str | None = None) -> str:
     )
 
 
-def _security_headers(handler):
+def _security_headers(handler: Handler) -> None:
     """Add security headers to every response."""
     extra_connect_src = _csp_extra_connect_src()
     handler._csp_extra_connect_src = extra_connect_src
@@ -133,7 +137,7 @@ def _security_headers(handler):
     )
 
 
-def _accepts_gzip(handler) -> bool:
+def _accepts_gzip(handler: Handler) -> bool:
     """Check if the client accepts gzip encoding."""
     headers = getattr(handler, 'headers', None)
     if not headers:
@@ -142,7 +146,7 @@ def _accepts_gzip(handler) -> bool:
     return 'gzip' in ae
 
 
-def _safe_write(handler, body: bytes) -> None:
+def _safe_write(handler: Handler, body: bytes) -> None:
     """Write response body, ignoring expected client disconnect errors.
 
     Logs disconnects at debug level so they are observable without
@@ -161,7 +165,7 @@ def _safe_write(handler, body: bytes) -> None:
         )
 
 
-def j(handler, payload, status: int=200, extra_headers: dict=None) -> None:
+def j(handler: Handler, payload: Any, status: int = 200, extra_headers: dict[str, str] | None = None) -> None:
     """Send a JSON response.
 
     *extra_headers*: optional dict of additional headers to include
@@ -188,7 +192,7 @@ def j(handler, payload, status: int=200, extra_headers: dict=None) -> None:
     _safe_write(handler, body)
 
 
-def t(handler, payload, status: int=200, content_type: str='text/plain; charset=utf-8') -> None:
+def t(handler: Handler, payload: str | bytes, status: int = 200, content_type: str = 'text/plain; charset=utf-8') -> None:
     """Send a plain text or HTML response."""
     body = payload if isinstance(payload, bytes) else str(payload).encode('utf-8')
     handler.send_response(status)
@@ -204,7 +208,7 @@ MAX_BODY_BYTES = 20 * 1024 * 1024  # 20MB limit for non-upload POST bodies
 
 # ── Credential redaction ──────────────────────────────────────────────────────
 
-def _build_redact_fn():
+def _build_redact_fn() -> Callable[[str], str]:
     """Return a redactor backed by hermes-agent plus local fallback patterns."""
     # Fallback mirrors the agent's known credential prefixes so WebUI API
     # responses remain a hard redaction boundary even without hermes-agent.
@@ -456,7 +460,7 @@ def redact_session_data(session_dict: dict) -> dict:
     return result
 
 
-def read_body(handler) -> dict:
+def read_body(handler: Handler) -> dict[str, Any]:
     """Read and JSON-parse a POST request body (capped at 20MB)."""
     raw_length = handler.headers.get('Content-Length', 0)
     try:
@@ -496,7 +500,7 @@ def get_profile_cookie_name() -> str:
     return os.getenv('WEBUI_PROFILE_COOKIE_NAME', PROFILE_COOKIE_NAME)
 
 
-def get_profile_cookie(handler) -> str | None:
+def get_profile_cookie(handler: Handler) -> str | None:
     """Extract the active-profile cookie value from the request, or None."""
     cookie_header = handler.headers.get('Cookie', '')
     if not cookie_header:
