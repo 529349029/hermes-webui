@@ -593,6 +593,27 @@ def main() -> None:
     except Exception as e:
         print(f'[!!] WARNING: Hermes plugin loading failed: {e}', flush=True)
 
+    # Start the bg_task_complete drain thread for terminal(notify_on_complete=true)
+    # agent wakeup. Reads tools.process_registry.completion_queue and emits SSE
+    # bg_task_complete events (canonical name; legacy process_complete alias is
+    # still emitted for back-compat) to the matching session's stream.
+    try:
+        from api.background_process import start_drain_thread
+        if start_drain_thread():
+            print('[ok] bg_task_complete drain thread started', flush=True)
+    except Exception as e:
+        print(f'[!!] WARNING: bg_task_complete drain failed to start: {e}', flush=True)
+
+    # Start the SessionChannel reaper for the persistent per-session SSE
+    # endpoint (/api/session/stream). Runs every 60s, collects channels with
+    # no subscribers past the grace period or past the idle TTL cap.
+    try:
+        from api.background_process import start_session_channel_reaper
+        if start_session_channel_reaper():
+            print('[ok] SessionChannel reaper thread started', flush=True)
+    except Exception as e:
+        print(f'[!!] WARNING: SessionChannel reaper failed to start: {e}', flush=True)
+
     # Load WebUI dashboard plugins
     try:
         from api.plugins import load_plugins
