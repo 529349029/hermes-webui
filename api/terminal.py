@@ -250,6 +250,7 @@ def _shell_argv(shell: str) -> list[str]:
 
 def _reader_loop(term: TerminalSession) -> None:
     decoder = codecs.getincrementaldecoder("utf-8")("replace")
+    _read_errors = 0
     try:
         while not term.closed.is_set():
             if term.proc.poll() is not None:
@@ -257,14 +258,23 @@ def _reader_loop(term: TerminalSession) -> None:
             try:
                 ready, _, _ = select.select([term.master_fd], [], [], 0.25)
             except (OSError, ValueError):
-                break
+                _read_errors += 1
+                if _read_errors > 5:
+                    break
+                time.sleep(0.1)
+                continue
+            _read_errors = 0
             if not ready:
                 continue
             try:
                 data = os.read(term.master_fd, 8192)
             except OSError as exc:
                 if exc.errno in (errno.EIO, errno.EBADF):
-                    break
+                    _read_errors += 1
+                    if _read_errors > 3:
+                        break
+                    time.sleep(0.1)
+                    continue
                 raise
             if not data:
                 break

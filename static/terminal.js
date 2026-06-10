@@ -10,6 +10,8 @@ const TERMINAL_UI={
   resizeTimer:null,
   closeTimer:null,
   typedLine:'',
+  inputBuffer:'',
+  inputTimer:null,
   height:null,
   resizeHandleReady:false,
   resizing:false,
@@ -153,12 +155,9 @@ function _ensureXterm(){
       closeComposerTerminal();
       return;
     }
-    const sid=TERMINAL_UI.sessionId||_terminalSessionId();
-    if(!sid)return;
-    api('/api/terminal/input',{method:'POST',body:JSON.stringify({
-      session_id:sid,
-      data,
-    })}).catch(e=>showToast(t('terminal_input_failed')+e.message,2600,'error'));
+    TERMINAL_UI.inputBuffer+=data;
+    clearTimeout(TERMINAL_UI.inputTimer);
+    TERMINAL_UI.inputTimer=setTimeout(_flushTerminalInput,50);
   });
   TERMINAL_UI.term=term;
   TERMINAL_UI.fitAddon=fitAddon;
@@ -431,6 +430,16 @@ function _connectTerminalOutput(){
     try{source.close();}catch(_){}
     TERMINAL_UI.source=null;
   });
+}
+
+async function _flushTerminalInput(){
+  const buf=TERMINAL_UI.inputBuffer;
+  TERMINAL_UI.inputBuffer='';
+  if(!buf)return;
+  const sid=TERMINAL_UI.sessionId||_terminalSessionId();
+  if(!sid)return;
+  api('/api/terminal/input',{method:'POST',body:JSON.stringify({session_id:sid,data:buf})})
+    .catch(e=>showToast(t('terminal_input_failed')+e.message,2600,'error'));
 }
 
 async function _startComposerTerminal(restart=false){
