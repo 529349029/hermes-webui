@@ -1459,6 +1459,7 @@ def _csrf_exempt_path(path: str) -> bool:
         "/api/auth/passkey/options",
         "/api/auth/passkey/login",
         "/api/csp-report",
+        "/api/approval/diag",
     }
 
 
@@ -7855,7 +7856,15 @@ def handle_post(handler, parsed) -> bool:
     if parsed.path == "/api/workspaces/reorder":
         return _handle_workspace_reorder(handler, body)
 
-    # ── Approval (POST) ──
+    # ── Approval diag (GET) ──
+    if parsed.path == "/api/approval/diag":
+        qs = parse_qs(parsed.query)
+        msg = (qs.get("msg", [""])[0]) or (body.get("msg", "") if isinstance(body, dict) else "")
+        sid = (qs.get("sid", [""])[0]) or (body.get("sid", "") if isinstance(body, dict) else "")
+        print(f"=== APPROVAL DIAG: msg={msg} sid={sid}", flush=True)
+        return j(handler, {"ok": True})
+
+# ── Approval (POST) ──
     if parsed.path == "/api/approval/respond":
         return _handle_approval_respond(handler, body)
 
@@ -13839,6 +13848,7 @@ def _resolve_approval_legacy(sid: str, approval_id: str, choice: str) -> bool:
     pending = None
     found_target = False
     gateway_keys = []
+    alt_sid = None
     with _lock:
         queue = _pending.get(sid)
         if isinstance(queue, list):
@@ -13888,6 +13898,39 @@ def _resolve_approval_legacy(sid: str, approval_id: str, choice: str) -> bool:
                 # idempotent over the session key set so the outcome is
                 # the same regardless of which entry wins the race.
                 found_target = True
+        # -- Fallback: when sid exact-match fails, try other keys --
+        if not pending and not found_target:
+            for alt in list(_pending.keys()):
+                if alt == sid:
+                    continue
+                alt_q = _pending.get(alt)
+                if isinstance(alt_q, list):
+                    pending = alt_q.pop(0) if alt_q else None
+                    found_target = pending is not None
+                    if not alt_q:
+                        _pending.pop(alt, None)
+                elif alt_q:
+                    pending = _pending.pop(alt, None)
+                    found_target = pending is not None
+                if found_target:
+                    alt_sid = alt
+                    break
+            if not pending and not found_target:
+                for alt in list(_gateway_queues.keys()):
+                    if alt == sid:
+                        continue
+                    alt_gw = _gateway_queues.get(alt)
+                    if alt_gw and len(alt_gw) > 0:
+                        alt_entry = alt_gw[0]
+                        alt_data = getattr(alt_entry, "data", None) or {}
+                        gateway_keys = alt_data.get("pattern_keys") or [alt_data.get("pattern_key", "")]
+                        found_target = True
+                        alt_sid = alt
+                        break
+        if alt_sid is not None:
+            print(f"=== APPROVAL FALLBACK FOUND: pending={bool(pending)} gateway={bool(found_target and gateway_keys)} alt_sid={alt_sid} sid={sid}")
+        if not pending and not found_target:
+            print(f"=== APPROVAL ENTRY NOT FOUND: pending_keys={list(_pending.keys())} gateway_keys={list(_gateway_queues.keys())} sid={sid}")
         # Notify SSE subscribers of the new head (or empty state) so the UI
         # surfaces any trailing approvals that were queued behind this one
         # without waiting for the next submit_pending. Without this, a parallel
@@ -13916,6 +13959,9 @@ def _resolve_approval_legacy(sid: str, approval_id: str, choice: str) -> bool:
     gateway_resolved = 0
     if found_target or not approval_id:
         gateway_resolved = resolve_gateway_approval(sid, choice, resolve_all=False) or 0
+        if not gateway_resolved and alt_sid:
+            gateway_resolved = resolve_gateway_approval(alt_sid, choice, resolve_all=False) or 0
+        print(f"=== APPROVAL GATEWAY RESOLVED: sid={sid} alt_sid={alt_sid} found_target={found_target} gateway_resolved={gateway_resolved}")
     # Keep the historical no-id response path truthy for old clients/tests while
     # making stale explicit ids bounded as not-active for Slice 3b.
     resolved = bool(pending) or bool(gateway_resolved) or not bool(approval_id)
@@ -13926,6 +13972,7 @@ def _resolve_approval_legacy(sid: str, approval_id: str, choice: str) -> bool:
 
 def _handle_approval_respond(handler, body):
     sid = body.get("session_id", "")
+    print(f"=== APPROVAL_RESPOND ENTERED: sid={sid} choice={body.get('choice')} approval_id={body.get('approval_id')}")
     if not sid:
         return bad(handler, "session_id is required")
     choice = body.get("choice", "deny")
@@ -13940,6 +13987,7 @@ def _handle_approval_respond(handler, body):
         ok = adapter.respond_approval(sid, approval_id, choice).accepted
     else:
         ok = _resolve_approval_legacy(sid, approval_id, choice)
+    print(f"=== APPROVAL ABOUT TO J: ok={ok}", flush=True)
     return j(handler, {"ok": ok, "choice": choice})
 
 

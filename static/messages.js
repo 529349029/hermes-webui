@@ -4114,7 +4114,8 @@ function toggleApprovalCardCollapsed(forceCollapsed) {
 
 async function respondApproval(choice) {
   const sid = _approvalSessionId || (S.session && S.session.session_id);
-  if (!sid) return;
+  try { navigator.sendBeacon("/api/approval/diag?msg=respondEntered&sid=" + encodeURIComponent(sid || "")); } catch(e) {}
+  if (!sid) { console.error("respondApproval: no sid"); try { navigator.sendBeacon("/api/approval/diag?msg=no_sid&sid=" + encodeURIComponent((S.session && S.session.session_id) || "")); } catch(e) {} return; }
   const approvalId = _approvalCurrentId;
   // Disable all buttons immediately to prevent double-submit
   ["approvalBtnOnce","approvalBtnSession","approvalBtnAlways","approvalBtnDeny"].forEach(id => {
@@ -4128,6 +4129,7 @@ async function respondApproval(choice) {
   try {
     await api("/api/approval/respond", {
       method: "POST",
+      timeoutMs: 300000,
       body: JSON.stringify({ session_id: sid, choice, approval_id: approvalId })
     });
   } catch(e) { setStatus(t("approval_responding") + " " + e.message); }
